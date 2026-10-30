@@ -1,0 +1,45 @@
+# Python 虚拟环境
+.venv/
+venv/
+env/
+
+# 字节码与缓存
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.egg-info/
+.eggs/
+
+# PyInstaller 产物（spec 含本机绝对路径，由 build.py 重新生成）
+build/
+dist/
+*.spec
+*.manifest
+*.exe
+
+# 本机密钥库
+vault.bin
+vault.tmp
+vault.migrate
+vault.bin.broken-*
+
+# 本地环境与编辑器
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.code-workspace
+
+# 系统文件与日志
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+*.log
