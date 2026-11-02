@@ -63,6 +63,10 @@ def run_self_test() -> int:
         return 1
     if current_code(loaded[0], 59)[0] != "94287082":
         return 1
+    from authenticator.qr import decoder_self_check
+
+    if not decoder_self_check():
+        return 1
     return 0
 
 

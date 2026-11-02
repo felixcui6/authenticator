@@ -20,8 +20,10 @@ from authenticator.core import (
     current_code,
     format_code,
     generate_secret,
+    parse_otpauth,
     provisioning_uri,
 )
+from authenticator.qr import decode_qr_file, decode_qr_image, image_from_clipboard
 from authenticator.vault import (
     InvalidBackup,
     InvalidPassword,
@@ -447,16 +449,17 @@ class AccountDialog(tk.Toplevel):
         )
         style_input(self.secret)
         self.secret.pack(fill="x", pady=(4, 6))
+        pending_prefill = ""
         if account is not None and account.secret:
             self.secret.insert("1.0", account.secret.rstrip("="))
         elif prefill:
-            self.secret.insert("1.0", prefill)
+            pending_prefill = prefill
         self.secret.bind("<Return>", self._save_event)
 
         hint = (
             "上面是当前密钥。可以修改，粘贴新密钥，或点「生成密钥」换一把新的。清空后保存会保留原密钥。"
             if account
-            else "粘贴网站给出的密钥，或点「生成密钥」。otpauth:// 链接也可以直接粘贴，链接里的位数和周期会自动采用。"
+            else "粘贴网站给出的密钥，或点「生成密钥」。otpauth:// 链接也可以直接粘贴。二维码图片可从菜单导入。"
         )
         tk.Label(
             pad,
@@ -506,7 +509,8 @@ class AccountDialog(tk.Toplevel):
         self.name_entry.bind("<Return>", self._save_event)
         self.issuer_entry.bind("<Return>", self._save_event)
         self.period_entry.bind("<Return>", self._save_event)
-        if prefill:
+        if pending_prefill:
+            self._apply_secret_text(pending_prefill)
             self.secret.focus_set()
         else:
             self.name_entry.focus_set()
@@ -534,9 +538,31 @@ class AccountDialog(tk.Toplevel):
         if not text:
             self.err.configure(text="剪贴板里没有文本")
             return
+        self._apply_secret_text(text)
+
+    def _apply_secret_text(self, text: str) -> None:
+        """填入密钥。otpauth 链接会拆出账号名称、发行方、位数和周期。"""
         self.secret.delete("1.0", "end")
-        self.secret.insert("1.0", text)
+        if "otpauth://" not in text.lower():
+            self.secret.insert("1.0", text.strip())
+            self.err.configure(text="")
+            return
+        try:
+            parsed = parse_otpauth(text)
+        except ValueError as exc:
+            self.secret.insert("1.0", text.strip())
+            self.err.configure(text=str(exc))
+            return
+        if parsed.name:
+            self.name_var.set(parsed.name)
+        if parsed.issuer:
+            self.issuer_var.set(parsed.issuer)
+        self.digits_var.set(str(parsed.digits))
+        self.period_var.set(str(parsed.period))
+        self.algorithm_var.set(parsed.algorithm)
+        self.secret.insert("1.0", parsed.secret.rstrip("="))
         self.err.configure(text="")
+        self.preview()
 
     def fill_generated_secret(self) -> None:
         self.secret.delete("1.0", "end")
@@ -943,7 +969,7 @@ class App(tk.Tk):
                 box,
                 text=(
                     "在网站的两步验证里选择验证器应用，复制密钥后点右上角「添加」。\n"
-                    "以 otpauth:// 开头的链接也可以直接粘贴。"
+                    "二维码可以选图片文件导入，或复制图片后用「从剪贴板添加」。"
                 ),
                 bg=BG,
                 fg=MUTED,
@@ -1017,13 +1043,48 @@ class App(tk.Tk):
             self.accounts.pop()
 
     def add_from_clipboard(self) -> None:
+        image_error = ""
+        image = image_from_clipboard()
+        if image is not None:
+            try:
+                text = decode_qr_image(image)
+            except ValueError as exc:
+                image_error = str(exc)
+                text = ""
+            finally:
+                image.close()
+            if text:
+                self.add_account(prefill=text)
+                return
         try:
-            text = self.clipboard_get().strip()
+            pasted = self.clipboard_get().strip()
         except tk.TclError:
-            messagebox.showinfo("剪贴板", "剪贴板里没有文本。", parent=self)
+            pasted = ""
+        if pasted:
+            self.add_account(prefill=pasted)
             return
-        if not text:
-            messagebox.showinfo("剪贴板", "剪贴板里没有文本。", parent=self)
+        if image_error:
+            messagebox.showinfo("剪贴板", image_error, parent=self)
+            return
+        messagebox.showinfo("剪贴板", "剪贴板里没有文本或二维码图片。", parent=self)
+
+    def add_from_qr_file(self) -> None:
+        if not self._vault_ok:
+            return
+        path = filedialog.askopenfilename(
+            title="选择二维码图片",
+            parent=self,
+            filetypes=[
+                ("图片", "*.png *.jpg *.jpeg *.bmp *.gif *.webp"),
+                ("所有文件", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        try:
+            text = decode_qr_file(path)
+        except ValueError as exc:
+            messagebox.showerror("无法识别", str(exc), parent=self)
             return
         self.add_account(prefill=text)
 
@@ -1130,6 +1191,7 @@ class App(tk.Tk):
     def open_main_menu(self) -> None:
         menu = tk.Menu(self, tearoff=0)
         menu.add_command(label="从剪贴板添加", command=self.add_from_clipboard)
+        menu.add_command(label="从二维码图片导入…", command=self.add_from_qr_file)
         menu.add_command(label="添加账号", command=self.add_account, accelerator="Ctrl+N")
         menu.add_separator()
         menu.add_command(label="导出备份…", command=self.export_backup)
@@ -1310,6 +1372,7 @@ class App(tk.Tk):
             "生成与 Google 身份验证器相同的动态口令（TOTP）。\n"
             "登录 Google、GitHub、微软等开启了验证器的网站时，输入这里的数字即可。\n\n"
             "添加账号：在网站的两步验证里选择验证器应用，复制密钥，回到这里点「添加」。\n"
+            "也可以从菜单导入二维码图片，或把二维码图片复制到剪贴板后选择「从剪贴板添加」。\n"
             "以 otpauth:// 开头的链接也可以直接粘贴。点击验证码即可复制。\n\n"
             "验证码默认每 30 秒变化一次，按这台电脑的时间计算。\n"
             "请在 Windows 设置中打开自动设置时间。\n"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import os
 import sys
 import tempfile
@@ -22,6 +23,7 @@ from authenticator.core import (
     parse_otpauth,
     provisioning_uri,
 )
+from authenticator.qr import decode_qr_file, decode_qr_image, decoder_self_check, image_from_clipboard
 from authenticator import vault as vault_module
 from authenticator.vault import (
     InvalidBackup,
@@ -338,6 +340,84 @@ class BackupTests(unittest.TestCase):
         damaged[-1] ^= 0xFF
         with self.assertRaises(InvalidBackup):
             read_backup(bytes(damaged), "correct-horse")
+
+
+class QrImportTests(unittest.TestCase):
+    def test_otpauth_prefill_fills_name_and_issuer(self) -> None:
+        import tkinter as tk
+
+        from authenticator.gui import AccountDialog
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            dialog = AccountDialog.__new__(AccountDialog)
+            dialog.secret = tk.Text(root)
+            dialog.name_var = tk.StringVar(master=root)
+            dialog.issuer_var = tk.StringVar(master=root)
+            dialog.digits_var = tk.StringVar(master=root, value="6")
+            dialog.period_var = tk.StringVar(master=root, value="30")
+            dialog.algorithm_var = tk.StringVar(master=root, value="SHA1")
+            dialog.err = tk.Label(root)
+            dialog.preview_label = tk.Label(root)
+            dialog.preview = lambda: None
+            AccountDialog._apply_secret_text(
+                dialog,
+                "otpauth://totp/Example:alice@google.com"
+                "?secret=JBSWY3DPEHPK3PXP&issuer=Example&digits=8&period=45&algorithm=SHA256",
+            )
+            self.assertEqual(dialog.name_var.get(), "alice@google.com")
+            self.assertEqual(dialog.issuer_var.get(), "Example")
+            self.assertEqual(dialog.digits_var.get(), "8")
+            self.assertEqual(dialog.period_var.get(), "45")
+            self.assertEqual(dialog.algorithm_var.get(), "SHA256")
+            self.assertEqual(dialog.secret.get("1.0", "end").strip(), "JBSWY3DPEHPK3PXP")
+        finally:
+            root.destroy()
+
+
+    def test_sample_qr_roundtrip(self) -> None:
+        self.assertTrue(decoder_self_check())
+
+    def test_blank_image_has_no_code(self) -> None:
+        from PIL import Image
+
+        blank = Image.new("RGB", (80, 80), "white")
+        with self.assertRaises(ValueError):
+            decode_qr_image(blank)
+
+    def test_file_and_clipboard_image(self) -> None:
+        from PIL import Image
+
+        import authenticator.qr as qr_module
+
+        with Image.open(io.BytesIO(qr_module._SAMPLE_PNG)) as sample:
+            sample.load()
+            copied = sample.copy()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "code.png"
+            copied.save(path)
+            self.assertEqual(decode_qr_file(path), qr_module._SAMPLE_TEXT)
+            with mock.patch("authenticator.qr.ImageGrab.grabclipboard", return_value=copied):
+                grabbed = image_from_clipboard()
+            self.assertIsNotNone(grabbed)
+            assert grabbed is not None
+            self.assertEqual(decode_qr_image(grabbed), qr_module._SAMPLE_TEXT)
+            with mock.patch("authenticator.qr.ImageGrab.grabclipboard", return_value=[str(path)]):
+                from_file = image_from_clipboard()
+            self.assertIsNotNone(from_file)
+            assert from_file is not None
+            self.assertEqual(decode_qr_image(from_file), qr_module._SAMPLE_TEXT)
+
+    def test_batch_export_is_rejected(self) -> None:
+        from PIL import Image
+
+        image = Image.new("RGB", (40, 40), "white")
+        payload = mock.Mock(text="otpauth-migration://offline?data=abc")
+        with mock.patch("authenticator.qr.zxingcpp.read_barcodes", return_value=[payload]):
+            with self.assertRaises(ValueError) as caught:
+                decode_qr_image(image)
+        self.assertIn("批量导出", str(caught.exception))
 
 
 if __name__ == "__main__":

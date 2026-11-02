@@ -53,6 +53,8 @@ def main() -> None:
         str(root),
         "--collect-all",
         "cryptography",
+        "--collect-all",
+        "zxingcpp",
     ]
     if icon is not None and icon.exists():
         args.extend(
