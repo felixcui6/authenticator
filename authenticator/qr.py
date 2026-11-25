@@ -6,6 +6,7 @@ import base64
 import io
 from pathlib import Path
 
+import segno
 import zxingcpp
 from PIL import Image, ImageGrab, UnidentifiedImageError
 
@@ -23,6 +24,20 @@ _SAMPLE_PNG = base64.b64decode(
     "j+1EqmXNz0YiWNGrjar1tT0LFcHzCs3YcmQN31G1kRCPI7SDWOHz//wmPgHPPKPpp446HgAAAABJ"
     "RU5ErkJggg=="
 )
+
+
+def qr_matrix(text: str) -> list[bytes]:
+    """返回二维码模块，1 为黑块，四周已留白边。"""
+    return [bytes(row) for row in segno.make(text, error="m").matrix]
+
+
+def qr_image(text: str, scale: int = 8) -> Image.Image:
+    """把 otpauth 链接画成二维码图片。"""
+    buffer = io.BytesIO()
+    segno.make(text, error="m").save(buffer, kind="png", scale=scale, border=2)
+    buffer.seek(0)
+    with Image.open(buffer) as image:
+        return image.convert("RGB").copy()
 
 
 def decode_qr_image(image: Image.Image) -> str:

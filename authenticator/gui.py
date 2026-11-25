@@ -13,6 +13,8 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from PIL import Image, ImageDraw
+
 from authenticator import __version__
 from authenticator.core import (
     Account,
@@ -23,7 +25,7 @@ from authenticator.core import (
     parse_otpauth,
     provisioning_uri,
 )
-from authenticator.qr import decode_qr_file, decode_qr_image, image_from_clipboard
+from authenticator.qr import decode_qr_file, decode_qr_image, image_from_clipboard, qr_matrix
 from authenticator.vault import (
     InvalidBackup,
     InvalidPassword,
@@ -316,6 +318,10 @@ class AccountCard(tk.Frame):
             menu.add_command(
                 label="复制迁移链接",
                 command=lambda: self.app.copy_migration(self.account),
+            )
+            menu.add_command(
+                label="导出二维码",
+                command=lambda: self.app.export_qr(self.account),
             )
             menu.add_separator()
         menu.add_command(label="编辑", command=lambda: self.app.edit_account(self.account))
@@ -651,6 +657,130 @@ class AccountDialog(tk.Toplevel):
     def cancel(self) -> None:
         self.result = None
         self.destroy()
+
+
+class QrExportDialog(tk.Toplevel):
+    def __init__(self, app: App, account: Account, matrix: list[bytes]):
+        super().__init__(app)
+        self.app = app
+        self.account = account
+        self.matrix = matrix
+        self.title("导出二维码")
+        self.configure(bg=BG)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.bind("<Escape>", lambda _event: self.destroy())
+
+        screen_w = max(app.winfo_screenwidth(), 800)
+        screen_h = max(app.winfo_screenheight(), 600)
+        pad = tk.Frame(self, bg=BG)
+        pad.pack(fill="both", expand=True, padx=18, pady=16)
+        tk.Label(pad, text=account.title, bg=BG, fg=TEXT, font=app.font_h2).pack(anchor="w")
+        subtitle = account.subtitle
+        if subtitle:
+            tk.Label(pad, text=subtitle, bg=BG, fg=MUTED, font=app.font_ui).pack(anchor="w", pady=(2, 0))
+        self.canvas = tk.Canvas(pad, bg=BG, highlightthickness=0, width=280, height=280)
+        self.canvas.pack(fill="both", expand=True, pady=(12, 8))
+        self.canvas.bind("<Configure>", self._draw)
+        tk.Label(
+            pad,
+            text="用另一台设备的验证器扫描。二维码里包含密钥，不要发给别人。",
+            bg=BG,
+            fg=MUTED,
+            font=app.font_small,
+            wraplength=320,
+            justify="left",
+        ).pack(anchor="w")
+        buttons = tk.Frame(pad, bg=BG)
+        buttons.pack(fill="x", pady=(12, 0))
+        make_button(buttons, "保存图片", self.save_image, app.font_btn, "primary").pack(side="right")
+        make_button(buttons, "关闭", self.destroy, app.font_btn, "ghost").pack(side="right", padx=(0, 8))
+
+        width = min(420, screen_w - 80)
+        height = min(560, screen_h - 80)
+        x = max(0, (screen_w - width) // 2)
+        y = max(0, (screen_h - height) // 2)
+        self.minsize(320, 400)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.after(30, self._draw)
+        self.lift()
+        self.focus_set()
+
+    def _draw(self, _event=None) -> None:
+        matrix = self.matrix
+        modules = len(matrix)
+        if modules == 0:
+            return
+        width = self.canvas.winfo_width()
+        height = self.canvas.winfo_height()
+        if width < 20 or height < 20:
+            return
+        self.canvas.delete("qr")
+        # 白边按模块计，格子变大时白边和码一起变大。
+        extra = 4
+        total = modules + extra * 2
+        cell = max(1, min(width, height) // total)
+        plate = cell * total
+        x0 = (width - plate) // 2
+        y0 = (height - plate) // 2
+        self.canvas.create_rectangle(x0, y0, x0 + plate, y0 + plate, fill="#ffffff", outline="#ffffff", tags="qr")
+        origin_x = x0 + extra * cell
+        origin_y = y0 + extra * cell
+        for row_index, row in enumerate(matrix):
+            for col_index, bit in enumerate(row):
+                if not bit:
+                    continue
+                left = origin_x + col_index * cell
+                top = origin_y + row_index * cell
+                self.canvas.create_rectangle(
+                    left,
+                    top,
+                    left + cell,
+                    top + cell,
+                    fill="#000000",
+                    outline="#000000",
+                    tags="qr",
+                )
+
+    def save_image(self) -> None:
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="保存二维码",
+            defaultextension=".png",
+            initialfile=_qr_filename(self.account),
+            filetypes=[("PNG 图片", "*.png")],
+        )
+        if not path:
+            return
+        try:
+            _save_qr(self.matrix, path)
+        except OSError as exc:
+            messagebox.showerror("无法保存", f"图片没有写入磁盘：{exc}", parent=self)
+            return
+        self.app.toast("已保存二维码")
+
+
+def _save_qr(matrix: list[bytes], path: str) -> None:
+    modules = len(matrix)
+    extra = 4
+    cell = max(12, 1200 // max(modules + extra * 2, 1))
+    side = (modules + extra * 2) * cell
+    image = Image.new("RGB", (side, side), "white")
+    draw = ImageDraw.Draw(image)
+    offset = extra * cell
+    for row_index, row in enumerate(matrix):
+        for col_index, bit in enumerate(row):
+            if not bit:
+                continue
+            left = offset + col_index * cell
+            top = offset + row_index * cell
+            draw.rectangle((left, top, left + cell - 1, top + cell - 1), fill="black")
+    image.save(path, format="PNG")
+
+
+def _qr_filename(account: Account) -> str:
+    raw = account.title.strip() or "account"
+    cleaned = "".join(" " if ch in '<>:"/\\|?*' else ch for ch in raw).strip()
+    return (cleaned or "account") + ".png"
 
 
 def option_menu(parent, variable: tk.StringVar, values: tuple[str, ...], font) -> ttk.Combobox:
@@ -1187,6 +1317,18 @@ class App(tk.Tk):
         self.clipboard_append(uri)
         self.update()
         self.toast("已复制迁移链接")
+
+    def export_qr(self, account: Account) -> None:
+        if account.invalid_reason:
+            messagebox.showerror("无法导出", account.invalid_reason, parent=self)
+            return
+        try:
+            matrix = qr_matrix(provisioning_uri(account))
+        except Exception:
+            log.exception("qr export failed")
+            messagebox.showerror("无法导出", "无法生成二维码", parent=self)
+            return
+        QrExportDialog(self, account, matrix)
 
     def open_main_menu(self) -> None:
         menu = tk.Menu(self, tearoff=0)

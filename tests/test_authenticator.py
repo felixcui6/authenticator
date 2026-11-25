@@ -23,7 +23,7 @@ from authenticator.core import (
     parse_otpauth,
     provisioning_uri,
 )
-from authenticator.qr import decode_qr_file, decode_qr_image, decoder_self_check, image_from_clipboard
+from authenticator.qr import decode_qr_file, decode_qr_image, decoder_self_check, image_from_clipboard, qr_image
 from authenticator import vault as vault_module
 from authenticator.vault import (
     InvalidBackup,
@@ -375,6 +375,18 @@ class QrImportTests(unittest.TestCase):
         finally:
             root.destroy()
 
+
+    def test_export_qr_roundtrip(self) -> None:
+        account = Account.create(
+            "alice smith@google.com",
+            "ACME Co",
+            "JBSWY3DPEHPK3PXP",
+            digits=8,
+            period=45,
+            algorithm="SHA256",
+        )
+        uri = provisioning_uri(account)
+        self.assertEqual(decode_qr_image(qr_image(uri)), uri)
 
     def test_sample_qr_roundtrip(self) -> None:
         self.assertTrue(decoder_self_check())
